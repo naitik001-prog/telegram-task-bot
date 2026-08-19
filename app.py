@@ -9,20 +9,33 @@ from flask import Flask, render_template_string, request, redirect, url_for, Res
 
 app = Flask(__name__)
 
-# Firebase Initialization
-FIREBASE_URL = os.getenv("FIREBASE_URL", "https://YOUR-FIREBASE-URL.firebaseio.com/")
+# Fallback Values + Environment Variables
+FIREBASE_URL = os.getenv("FIREBASE_URL", "https://my-earning-bot-pro-default-rtdb.firebaseio.com/")
+if not FIREBASE_URL.endswith('/'):
+    FIREBASE_URL += '/'
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8768026422:AAGz2ocG41w1F0jPvD9LoR9kqmydJQcaKhA")
 
+# Auto-detect secret_key.json path on Render or Local
+cred_path = "secret_key.json"
+if not os.path.exists(cred_path) and os.path.exists("/etc/secrets/secret_key.json"):
+    cred_path = "/etc/secrets/secret_key.json"
+
 if not firebase_admin._apps:
-    cred_path = "secret_key.json"
     if os.path.exists(cred_path):
-        cred = credentials.Certificate(cred_path)
-        firebase_admin.initialize_app(cred, {'databaseURL': FIREBASE_URL})
+        try:
+            cred = credentials.Certificate(cred_path)
+            firebase_admin.initialize_app(cred, {'databaseURL': FIREBASE_URL})
+            print("✅ Firebase initialized successfully!")
+        except Exception as e:
+            print("❌ Firebase Init Error:", e)
     else:
-        print("⚠️ secret_key.json not found! Please check secrets.")
+        print(f"⚠️ secret_key.json not found at {cred_path}!")
 
 def get_settings():
-    settings = db.reference('settings').get() or {}
+    try:
+        settings = db.reference('settings').get() or {}
+    except Exception:
+        settings = {}
     return {
         'task_reward': float(settings.get('task_reward', 20.0)),
         'referral_reward': float(settings.get('referral_reward', 5.0)),
@@ -63,8 +76,6 @@ HTML_TEMPLATE = """
         .badge-approved { background: #064e3b; color: #a7f3d0; }
         .badge-rejected { background: #7f1d1d; color: #fecaca; }
         .action-btn { font-size: 0.82rem; border-radius: 6px; font-weight: 500; }
-        .nav-tabs .nav-link.active { background-color: #3b82f6; color: white; border: none; }
-        .nav-tabs .nav-link { color: #94a3b8; border: none; }
     </style>
 </head>
 <body class="p-3 p-md-4">
@@ -81,7 +92,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- CONFIGURATION & SETTINGS MODAL CARD -->
+        <!-- CONFIGURATION & SETTINGS CARD -->
         <div class="card card-stat p-3 mb-4">
             <h5 class="fw-bold text-primary mb-3"><i class="bi bi-sliders me-2"></i>Live Dynamic Settings</h5>
             <form action="/update-settings" method="POST" class="row g-3 align-items-center">
@@ -215,7 +226,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
         {% else %}
-        <div class="alert alert-secondary bg-dark text-white border-secondary">No task submissions yet.</div>
+        <div class="alert alert-secondary bg-dark text-white border-secondary">No task submissions yet. Send /start on Telegram bot to generate data!</div>
         {% endfor %}
 
         <!-- WITHDRAWAL REQUESTS SECTION -->
@@ -306,26 +317,32 @@ HTML_TEMPLATE = """
 @app.route('/')
 def index():
     settings = get_settings()
-    users_data = db.reference('users').get() or {}
-    tasks_data = db.reference('tasks').get() or {}
-    withdrawals_data = db.reference('withdrawals').get() or {}
+    try:
+        users_data = db.reference('users').get() or {}
+        tasks_data = db.reference('tasks').get() or {}
+        withdrawals_data = db.reference('withdrawals').get() or {}
+    except Exception as e:
+        print("DB Read Error:", e)
+        users_data, tasks_data, withdrawals_data = {}, {}, {}
 
-    tasks_list = [t for t in tasks_data.values() if t and t.get('screenshot_id')]
+    tasks_list = [t for t in tasks_data.values() if isinstance(t, dict) and t.get('screenshot_id')]
     tasks_list.sort(key=lambda x: str(x.get('submission_time', '')), reverse=True)
 
     withdrawals = list(withdrawals_data.values()) if isinstance(withdrawals_data, dict) else []
     withdrawals.sort(key=lambda x: str(x.get('created_at', '')), reverse=True)
 
     grouped_users = {}
-    for uid, uinfo in users_data.items():
-        u_tasks = [t for t in tasks_list if str(t.get('user_id')) == str(uid)]
-        if u_tasks:
-            grouped_users[uid] = {'info': uinfo, 'tasks': u_tasks}
+    if isinstance(users_data, dict):
+        for uid, uinfo in users_data.items():
+            if isinstance(uinfo, dict):
+                u_tasks = [t for t in tasks_list if str(t.get('user_id')) == str(uid)]
+                if u_tasks:
+                    grouped_users[uid] = {'info': uinfo, 'tasks': u_tasks}
 
-    total_users = len(users_data)
+    total_users = len(users_data) if isinstance(users_data, dict) else 0
     total_submissions = len(tasks_list)
     pending_count = sum(1 for t in tasks_list if t.get('status') == 'Pending')
-    pending_withdraws = sum(1 for w in withdrawals if w.get('status') == 'Pending')
+    pending_withdraws = sum(1 for w in withdrawals if isinstance(w, dict) and w.get('status') == 'Pending')
 
     return render_template_string(HTML_TEMPLATE, grouped_users=grouped_users, withdrawals=withdrawals, 
                                   total_users=total_users, total_submissions=total_submissions,
@@ -333,11 +350,14 @@ def index():
 
 @app.route('/update-settings', methods=['POST'])
 def update_settings():
-    db.reference('settings').update({
-        'task_reward': float(request.form.get('task_reward', 20.0)),
-        'referral_reward': float(request.form.get('referral_reward', 5.0)),
-        'min_withdraw': float(request.form.get('min_withdraw', 50.0))
-    })
+    try:
+        db.reference('settings').update({
+            'task_reward': float(request.form.get('task_reward', 20.0)),
+            'referral_reward': float(request.form.get('referral_reward', 5.0)),
+            'min_withdraw': float(request.form.get('min_withdraw', 50.0))
+        })
+    except Exception as e:
+        print("Update error:", e)
     return redirect(url_for('index'))
 
 @app.route('/broadcast', methods=['POST'])
@@ -349,10 +369,13 @@ def handle_broadcast():
 
 @app.route('/toggle-ban/<user_id>')
 def toggle_ban(user_id):
-    u_ref = db.reference(f"users/{user_id}")
-    u_data = u_ref.get() or {}
-    is_banned = u_data.get('banned', False)
-    u_ref.update({'banned': not is_banned})
+    try:
+        u_ref = db.reference(f"users/{user_id}")
+        u_data = u_ref.get() or {}
+        is_banned = u_data.get('banned', False)
+        u_ref.update({'banned': not is_banned})
+    except Exception as e:
+        print("Ban error:", e)
     return redirect(url_for('index'))
 
 @app.route('/get-telegram-photo/<file_id>')
@@ -373,59 +396,68 @@ def handle_task_action(type, task_id, user_id):
     task_reward = settings['task_reward']
     referral_reward = settings['referral_reward']
 
-    if type == 'approve':
-        db.reference(f"tasks/{task_id}").update({'status': 'Approved'})
-        u_ref = db.reference(f"users/{user_id}")
-        u_data = u_ref.get() or {}
-        
-        new_balance = float(u_data.get('balance', 0)) + task_reward
-        new_tasks = int(u_data.get('tasks_done', 0)) + 1
-        
-        u_ref.update({'balance': new_balance, 'tasks_done': new_tasks})
-        send_telegram_msg(user_id, f"🎉 <b>Task Approved!</b>\nYour task was verified. <b>₹{task_reward}</b> added to your wallet!")
+    try:
+        if type == 'approve':
+            db.reference(f"tasks/{task_id}").update({'status': 'Approved'})
+            u_ref = db.reference(f"users/{user_id}")
+            u_data = u_ref.get() or {}
+            
+            new_balance = float(u_data.get('balance', 0)) + task_reward
+            new_tasks = int(u_data.get('tasks_done', 0)) + 1
+            
+            u_ref.update({'balance': new_balance, 'tasks_done': new_tasks})
+            send_telegram_msg(user_id, f"🎉 <b>Task Approved!</b>\nYour task was verified. <b>₹{task_reward}</b> added to your wallet!")
 
-        # Process Referral Commission on First Task
-        ref_id = u_data.get('referred_by')
-        if ref_id and not u_data.get('referral_paid'):
-            ref_user_ref = db.reference(f"users/{ref_id}")
-            ref_user_data = ref_user_ref.get() or {}
-            ref_bal = float(ref_user_data.get('balance', 0)) + referral_reward
-            ref_user_ref.update({'balance': ref_bal})
-            u_ref.update({'referral_paid': True})
-            send_telegram_msg(ref_id, f"🎁 <b>Referral Bonus Received!</b>\nYour invited friend completed their task. You earned <b>₹{referral_reward}</b>!")
+            ref_id = u_data.get('referred_by')
+            if ref_id and not u_data.get('referral_paid'):
+                ref_user_ref = db.reference(f"users/{ref_id}")
+                ref_user_data = ref_user_ref.get() or {}
+                ref_bal = float(ref_user_data.get('balance', 0)) + referral_reward
+                ref_user_ref.update({'balance': ref_bal})
+                u_ref.update({'referral_paid': True})
+                send_telegram_msg(ref_id, f"🎁 <b>Referral Bonus Received!</b>\nYour invited friend completed their task. You earned <b>₹{referral_reward}</b>!")
 
-    elif type == 'reject':
-        db.reference(f"tasks/{task_id}").update({'status': 'Rejected'})
-        send_telegram_msg(user_id, "❌ <b>Task Rejected!</b>\nYour submitted proof was invalid.")
-        
+        elif type == 'reject':
+            db.reference(f"tasks/{task_id}").update({'status': 'Rejected'})
+            send_telegram_msg(user_id, "❌ <b>Task Rejected!</b>\nYour submitted proof was invalid.")
+    except Exception as e:
+        print("Task Action Error:", e)
+
     return redirect(url_for('index'))
 
 @app.route('/payout/pay/<w_id>/<user_id>/<float:amount>')
 def handle_payout(w_id, user_id, amount):
-    db.reference(f"withdrawals/{w_id}").update({'status': 'Paid'})
-    send_telegram_msg(user_id, f"✅ <b>Withdrawal Successful!</b>\nYour payout of <b>₹{amount}</b> has been processed via UPI.")
-    
-    masked_user = str(user_id)[:4] + "****"
-    public_notice = (
-        "🥳 <b>NEW PAYOUT PROOF!</b> 🥳\n\n"
-        f"👤 <b>User ID:</b> <code>{masked_user}</code>\n"
-        f"💸 <b>Amount Paid:</b> <b>₹{amount}</b>\n"
-        "💳 <b>Status:</b> Payment Sent Successfully!\n\n"
-        "🚀 <i>Complete tasks and withdraw daily!</i>"
-    )
-    broadcast_to_all(public_notice)
+    try:
+        db.reference(f"withdrawals/{w_id}").update({'status': 'Paid'})
+        send_telegram_msg(user_id, f"✅ <b>Withdrawal Successful!</b>\nYour payout of <b>₹{amount}</b> has been processed via UPI.")
+        
+        masked_user = str(user_id)[:4] + "****"
+        public_notice = (
+            "🥳 <b>NEW PAYOUT PROOF!</b> 🥳\n\n"
+            f"👤 <b>User ID:</b> <code>{masked_user}</code>\n"
+            f"💸 <b>Amount Paid:</b> <b>₹{amount}</b>\n"
+            "💳 <b>Status:</b> Payment Sent Successfully!\n\n"
+            "🚀 <i>Complete tasks and withdraw daily!</i>"
+        )
+        broadcast_to_all(public_notice)
+    except Exception as e:
+        print("Payout error:", e)
     return redirect(url_for('index'))
 
 @app.route('/download-csv')
 def download_csv():
-    tasks_data = db.reference('tasks').get() or {}
+    try:
+        tasks_data = db.reference('tasks').get() or {}
+    except Exception:
+        tasks_data = {}
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(['Task ID', 'User ID', 'Email', 'Status', 'Time'])
     
-    for tid, t in tasks_data.items():
-        if t and t.get('screenshot_id'):
-            writer.writerow([t.get('id'), t.get('user_id'), t.get('assigned_email'), t.get('status'), t.get('submission_time')])
+    if isinstance(tasks_data, dict):
+        for tid, t in tasks_data.items():
+            if isinstance(t, dict) and t.get('screenshot_id'):
+                writer.writerow([t.get('id'), t.get('user_id'), t.get('assigned_email'), t.get('status'), t.get('submission_time')])
         
     output.seek(0)
     return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=tasks_history.csv"})
