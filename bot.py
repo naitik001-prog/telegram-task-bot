@@ -7,7 +7,7 @@ from threading import Thread
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from app import app, BOT_TOKEN, get_settings
 
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot("8768026422:AAGz2ocG41w1F0jPvD9LoR9kqmydJQcaKhA")
 
 FIRST_NAMES = ["Robert", "Daniel", "Michael", "James", "David", "Pooja", "Rahul", "Neha", "Amit", "Priya"]
 LAST_NAMES = ["Odebralski", "Smith", "Johnson", "Williams", "Gupta", "Sharma", "Verma", "Singh"]
