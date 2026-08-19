@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 # Firebase Initialization
 FIREBASE_URL = os.getenv("FIREBASE_URL", "https://YOUR-FIREBASE-URL.firebaseio.com/")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8768026422:AAGz2ocG41w1F0jPvD9LoR9kqmydJQcaKhA")
 
 if not firebase_admin._apps:
     cred_path = "secret_key.json"
