@@ -1,0 +1,5 @@
+flask
+requests
+pyTelegramBotAPI
+gunicorn
+firebase-admin
